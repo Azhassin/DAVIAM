@@ -1,85 +1,111 @@
-from Frontend.GUI import *
+import os
+import subprocess
+import sys
+import threading
+from asyncio import run
+from json import load
+from time import sleep
+
+ROOT = os.path.dirname(os.path.abspath(__file__))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+from Backend.Automation import Automation
+from Backend.Chatbot import ChatBot
 from Backend.Model import FirstLLayerDMM
 from Backend.RealtimeSearchEngine import RealtimeSearchEngine
-from Backend.Automation import Automation
 from Backend.SpeechToText import SpeechRecognition
-from Backend.Chatbot import ChatBot
 from Backend.TextToSpeech import TextToSpeech
-from dotenv import dotenv_values
-from asyncio import run
-from time import sleep
-import subprocess
-import threading
-import json
-import os
+from Frontend.GUI import (
+    AnswerModifier,
+    GetAssistantStatus,
+    GetMicrophoneStatus,
+    GraphicalUserInterface,
+    QueryModifier,
+    SetAssistantStatus,
+    SetMicrophoneStatus,
+    ShowTextToScreen,
+    TempDirectoryPath,
+)
+from paths import data_path, ensure_runtime_dirs, env_get, files_path
 
-env_vars=dotenv_values(".env")
-Username=env_vars.get("Username")
-Assistantname=env_vars.get("Assistantname")
-FullForm=env_vars.get("FullForm")
-DefaultMessage=f'''User : Hello {Assistantname}, I am an intelligent individual named {Username}, your creator. How are you?
+ensure_runtime_dirs()
+
+Username = env_get("Username", "User")
+Assistantname = env_get("Assistantname", "DAVIAM")
+DefaultMessage = f'''User : Hello {Assistantname}, I am an intelligent individual named {Username}, your creator. How are you?
 {Assistantname} : Welcome {Username}. I am {Assistantname}. I am doing well. How may I help you?
 User : Who created you ?
 {Assistantname} : I was created by a team of 6 intelligent individuals named {Username}.'''
-subprocesses=[]
-Functions=["open","close","play","system","content","google search","youtube search"]
+subprocesses = []
+Functions = ["open", "close", "play", "system", "content", "google search", "youtube search", "reminder"]
+
 
 def ShowDefaultChatIfNoChats():
-    File=open(r'Data\\ChatLog.json',"r",encoding='utf-8')
-    if len(File.read())<5:
-        with open(TempDirectoryPath('Database.data'),'w',encoding='utf-8') as file:
-            file.write("")
+    path = data_path("ChatLog.json")
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            raw = handle.read()
+    except OSError:
+        raw = ""
+    if len(raw) < 5:
+        with open(TempDirectoryPath("Database.data"), "w", encoding="utf-8") as handle:
+            handle.write("")
+        with open(TempDirectoryPath("Responses.data"), "w", encoding="utf-8") as handle:
+            handle.write(DefaultMessage)
 
-        with open(TempDirectoryPath('Responses.data'),'w',encoding='utf-8') as file:
-            file.write(DefaultMessage)
 
 def ReadChatLogJson():
-    with open(r'Data\\ChatLog.json','r',encoding='utf-8') as file:
-        chatlog_data=json.load(file)
-    return chatlog_data
+    with open(data_path("ChatLog.json"), "r", encoding="utf-8") as handle:
+        return load(handle)
+
 
 def ChatLogIntegration():
-    json_data=ReadChatLogJson()
-    formatted_chatlog=""
+    try:
+        json_data = ReadChatLogJson()
+    except (OSError, ValueError):
+        json_data = []
+    formatted_chatlog = ""
     for entry in json_data:
-        if entry["role"]=="user":
-            formatted_chatlog+=f"User: {entry['content']}\n"
-        elif entry['role']=="assistant":
-            formatted_chatlog+=f"Assistant: {entry['content']}\n"
-    formatted_chatlog=formatted_chatlog.replace("User","User ")
-    formatted_chatlog=formatted_chatlog.replace("Assistant",f"{Assistantname} ")
+        if not isinstance(entry, dict):
+            continue
+        content = entry.get("content", "")
+        if entry.get("role") == "user":
+            formatted_chatlog += f"User : {content}\n"
+        elif entry.get("role") == "assistant":
+            formatted_chatlog += f"{Assistantname} : {content}\n"
 
-    with open(TempDirectoryPath('Database.data'),'w',encoding='utf-8') as file:
-        file.write(AnswerModifier(formatted_chatlog))
+    with open(TempDirectoryPath("Database.data"), "w", encoding="utf-8") as handle:
+        handle.write(AnswerModifier(formatted_chatlog))
+
 
 def ShowChatsOnGUI():
-    File=open(TempDirectoryPath('Database.data'),'r',encoding='utf-8')
-    Data=File.read()
-    if len(str(Data))>0:
-        lines=Data.split('\n')
-        result='\n'.join(lines)
-        File.close()
-        File=open(TempDirectoryPath('Responses.data'),'w',encoding='utf-8')
-        File.write(result)
-        File.close()
+    with open(TempDirectoryPath("Database.data"), "r", encoding="utf-8") as handle:
+        Data = handle.read()
+    if len(str(Data)) > 0:
+        with open(TempDirectoryPath("Responses.data"), "w", encoding="utf-8") as handle:
+            handle.write(Data)
+
 
 def InitialExecution():
+    ensure_runtime_dirs()
     SetMicrophoneStatus("False")
     ShowTextToScreen("")
     ShowDefaultChatIfNoChats()
     ChatLogIntegration()
     ShowChatsOnGUI()
 
-InitialExecution()
 
 def MainExecution():
-    
-    TaskExecution=False
-    ImageExecution=False
-    ImageGenerationQuery=""
+    TaskExecution = False
+    ImageExecution = False
+    ImageGenerationQuery = ""
 
     SetAssistantStatus("Listening...")
-    Query=SpeechRecognition()
+    Query = SpeechRecognition()
+    if not Query:
+        SetAssistantStatus("Available ... ")
+        return False
     ShowTextToScreen(f"User : {Query}")
     SetAssistantStatus("Thinking ... ")
     Decision = FirstLLayerDMM(Query)
@@ -88,102 +114,95 @@ def MainExecution():
     print(f"Decision: {Decision}")
     print("")
 
-    G=any([i for i in Decision if i.startswith("general")])
-    R=any([i for i in Decision if i.startswith("realtime")])
+    G = any(i for i in Decision if i.startswith("general"))
+    R = any(i for i in Decision if i.startswith("realtime"))
 
-    Mearged_query=" and ".join(
+    Mearged_query = " and ".join(
         [" ".join(i.split()[1:]) for i in Decision if i.startswith("general") or i.startswith("realtime")]
     )
 
     for queries in Decision:
-        if "generate " in queries:
-            ImageGenerationQuery=str(queries)
-            ImageExecution=True
+        if queries.startswith("generate image"):
+            ImageGenerationQuery = str(queries)
+            ImageExecution = True
 
     for queries in Decision:
-        
-        if TaskExecution==False:
+        if TaskExecution is False:
             if any(queries.startswith(func) for func in Functions):
                 run(Automation(list(Decision)))
-                TaskExecution=True
+                TaskExecution = True
 
-    if ImageExecution==True:
-
-        with open(r"Frontend\\Files\\ImageGeneration.data","w") as file:
-            file.write(f"{ImageGenerationQuery},True")
+    if ImageExecution is True:
+        with open(files_path("ImageGeneration.data"), "w", encoding="utf-8") as handle:
+            handle.write(f"{ImageGenerationQuery},True")
 
         try:
-            p1=subprocess.Popen(['python',r'Backend\\ImageGeneration.py'],
-                            stdout=subprocess.PIPE,stderr=subprocess.PIPE,
-                            stdin=subprocess.PIPE, shell=False)
-            subprocesses.append(p1)
-
-        except Exception as e:
-            print(f"Error starting ImageGeneration.py: {e}")
+            worker = subprocess.Popen(
+                [sys.executable, os.path.join(ROOT, "Backend", "ImageGeneration.py")],
+                cwd=ROOT,
+            )
+            subprocesses.append(worker)
+        except Exception as error:
+            print(f"Error starting ImageGeneration.py: {error}")
 
     if G and R:
-
         SetAssistantStatus("Searching ... ")
         Answer = RealtimeSearchEngine(QueryModifier(Mearged_query))
         ShowTextToScreen(f"{Assistantname} : {Answer}")
         SetAssistantStatus("Answering ... ")
         TextToSpeech(Answer)
         return True
-    
-    else:
-        for Queries in Decision:
 
-            if "general" in Queries:
-                SetAssistantStatus("Thinking ... ")
-                QueryFinal=Queries.replace("general ","")
-                Answer=ChatBot(QueryModifier(QueryFinal))
-                ShowTextToScreen(f"{Assistantname} : {Answer}")
-                SetAssistantStatus("Answering ... ")
-                TextToSpeech(Answer)
-                return True
-            
-            elif "realtime" in Queries:
-                SetAssistantStatus("Searching ... ")
-                QueryFinal=Queries.replace("realtime ","")
-                Answer=RealtimeSearchEngine(QueryModifier(QueryFinal))
-                ShowTextToScreen(f"{Assistantname} : {Answer}")
-                SetAssistantStatus("Answering ... ")
-                TextToSpeech(Answer)
+    for Queries in Decision:
+        if Queries.startswith("general"):
+            SetAssistantStatus("Thinking ... ")
+            QueryFinal = Queries.replace("general ", "")
+            Answer = ChatBot(QueryModifier(QueryFinal))
+            ShowTextToScreen(f"{Assistantname} : {Answer}")
+            SetAssistantStatus("Answering ... ")
+            TextToSpeech(Answer)
+            return True
 
-            elif "exit" in Queries:
-                QueryFinal="Okay, Bye!"
-                Answer=ChatBot(QueryModifier(QueryFinal))
-                ShowTextToScreen(f"{Assistantname} : {Answer}")
-                SetAssistantStatus("Answering ... ")
-                TextToSpeech(Answer)
-                SetAssistantStatus("Answering ... ")
-                os._exit(1)
-                exit()
+        elif Queries.startswith("realtime"):
+            SetAssistantStatus("Searching ... ")
+            QueryFinal = Queries.replace("realtime ", "")
+            Answer = RealtimeSearchEngine(QueryModifier(QueryFinal))
+            ShowTextToScreen(f"{Assistantname} : {Answer}")
+            SetAssistantStatus("Answering ... ")
+            TextToSpeech(Answer)
+
+        elif Queries.startswith("exit"):
+            QueryFinal = "Okay, Bye!"
+            Answer = ChatBot(QueryModifier(QueryFinal))
+            ShowTextToScreen(f"{Assistantname} : {Answer}")
+            SetAssistantStatus("Answering ... ")
+            TextToSpeech(Answer)
+            os._exit(1)
+
+    return True
+
 
 def FirstThread():
-
     while True:
+        CurrentStatus = GetMicrophoneStatus()
 
-        CurrentStatus=GetMicrophoneStatus()
-
-        if CurrentStatus=="True":
+        if CurrentStatus == "True":
             MainExecution()
-
         else:
-            AIStatus=GetAssistantStatus()
+            AIStatus = GetAssistantStatus()
 
             if "Available ... " in AIStatus:
                 sleep(0.1)
-
             else:
                 SetAssistantStatus("Available ... ")
 
-def SecondThread():
 
+def SecondThread():
     GraphicalUserInterface()
 
-if __name__=="__main__":
 
-    thread2=threading.Thread(target=FirstThread,daemon=True)
+if __name__ == "__main__":
+    InitialExecution()
+    thread2 = threading.Thread(target=FirstThread, daemon=True)
     thread2.start()
     SecondThread()
