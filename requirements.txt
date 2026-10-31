@@ -1,0 +1,21 @@
+# DAVIAM runtime dependencies. Install from the repository root:
+#   python -m venv .venv
+#   source .venv/bin/activate
+#   pip install -r requirements.txt
+#
+# Python 3.10 or newer. Tested on 3.12.
+
+python-dotenv>=1.0.1
+PyQt5>=5.15.10
+groq>=0.13.0
+cohere>=5.13.0
+edge-tts>=6.1.12
+pygame>=2.5.2
+Pillow>=10.0.0
+requests>=2.31.0
+selenium>=4.20.0
+webdriver-manager>=4.0.1
+mtranslate>=1.8.0
+googlesearch-python>=1.2.3
+rich>=13.7.0
+keyboard>=0.13.5

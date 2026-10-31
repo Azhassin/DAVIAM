@@ -1,20 +1,19 @@
-import cohere
-import rich
-from dotenv import dotenv_values
+import os
+import sys
 
-env_vars=dotenv_values(".env")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
-CohereAPIKey=env_vars.get("CohereAPIKey")
+from paths import env_get
 
-co=cohere.Client(api_key=CohereAPIKey)
+DEFAULT_COHERE_MODEL = "command-a-03-2025"
 
-funcs=[
-    "exit","general","realtime","open","close","play",
-    "generate image","system","content","google search",
-    "youtube search","reminder"
+funcs = [
+    "exit", "general", "realtime", "open", "close", "play",
+    "generate image", "system", "content", "google search",
+    "youtube search", "reminder",
 ]
-
-messages=[]
 
 preamble = """
 You are a very accurate Decision-Making Model, which decides what kind of a query is given to you.
@@ -36,11 +35,10 @@ You will decide whether a query is a 'general' query, a 'realtime' query, or is 
 *** Respond with 'general (query)' if you can't decide the kind of query or if a query is asking to perform a task which is not mentioned above. ***
 """
 
-ChatHistory=[
-    {"role": "User", "message": "how are you?"} ,
+ChatHistory = [
+    {"role": "User", "message": "how are you?"},
     {"role": "Chatbot", "message": "general how are you?"},
     {"role": "User", "message": "do you like pizza?"},
-    {"role": "Chatbot", "message": "general do you like pizza"},
     {"role": "Chatbot", "message": "general do you like pizza"},
     {"role": "User", "message": "open chrome and tell me about mahatma gandhi."},
     {"role": "Chatbot", "message": "open chrome, general tell me about mahatma gandhi."},
@@ -49,49 +47,89 @@ ChatHistory=[
     {"role": "User", "message": "what is today's date and by the way remind me that i have a dancing performance on 5th aug at 11pm"},
     {"role": "Chatbot", "message": "general what is today's date, reminder 11:00pm 5th aug dancing performance"},
     {"role": "User", "message": "chat with me. "},
-    {"role": "Chatbot", "message": "general chat with me. "}
+    {"role": "Chatbot", "message": "general chat with me. "},
 ]
 
-def FirstLLayerDMM(prompt:str="test"):
-    
-    messages.append({"role":"user","content":f"{prompt}"})
 
-    stream=co.chat_stream(
-        model='command-r-plus',
-        message=prompt,
-        temperature=0.7,
-        chat_history=ChatHistory,
-        prompt_truncation='OFF',
-        connectors=[],
-        preamble=preamble
-    )
+def _history_messages():
+    converted = []
+    for item in ChatHistory:
+        role = item["role"].strip().lower()
+        if role == "chatbot":
+            role = "assistant"
+        converted.append({"role": role, "content": item["message"]})
+    return converted
 
-    response=""
 
-    for event in stream:
-        if event.event_type=="text-generation":
-            response+=event.text
-
-    response=response.replace("\n","")
-    response=response.split(",")
-
-    response=[i.strip() for i in response]
-
-    temp=[]
-
-    for task in response:
+def parse_decisions(response):
+    """Split a decision-model reply into the known command prefixes."""
+    parts = [part.strip().strip("'\"") for part in (response or "").replace("\n", "").split(",")]
+    chosen = []
+    for task in parts:
+        if not task:
+            continue
         for func in funcs:
             if task.startswith(func):
-                temp.append(task)
+                chosen.append(task)
+                break
+    return chosen
 
-    response=temp
 
-    if "(query)" in response:
-        newresponse=FirstLLayerDMM(prompt=prompt)
-        return newresponse
-    else:
-        return response
-    
-if __name__=="__main__":
+def _fallback(prompt, reason):
+    print(f"{reason} Treating the request as general chat.")
+    return [f"general {prompt}"]
+
+
+def FirstLLayerDMM(prompt: str = "test", _depth: int = 0):
+    key = env_get("CohereAPIKey")
+    if not key:
+        return _fallback(prompt, "CohereAPIKey is not set.")
+
+    try:
+        import cohere
+    except ImportError:
+        return _fallback(prompt, "The cohere package is not installed.")
+
+    model = env_get("CohereModel", DEFAULT_COHERE_MODEL)
+    messages = [{"role": "system", "content": preamble}]
+    messages.extend(_history_messages())
+    messages.append({"role": "user", "content": prompt})
+
+    try:
+        client = cohere.ClientV2(api_key=key)
+        stream = client.chat_stream(
+            model=model,
+            messages=messages,
+            temperature=0.2,
+        )
+        response = ""
+        thinking = ""
+        for event in stream:
+            if getattr(event, "type", None) != "content-delta":
+                continue
+            piece = getattr(getattr(getattr(event, "delta", None), "message", None), "content", None)
+            text = getattr(piece, "text", None)
+            thought = getattr(piece, "thinking", None)
+            if text:
+                response += text
+            if thought:
+                thinking += thought
+        if not response.strip():
+            response = thinking
+    except Exception as error:
+        return _fallback(prompt, f"Decision model error: {error}")
+
+    parsed = parse_decisions(response)
+    unresolved = (not parsed) or any("(query)" in task.lower() for task in parsed)
+    if unresolved:
+        if _depth < 1:
+            return FirstLLayerDMM(prompt=prompt, _depth=_depth + 1)
+        return _fallback(prompt, "The decision model did not return a usable command.")
+    return parsed
+
+
+if __name__ == "__main__":
+    from rich import print
+
     while True:
-        rich.print(FirstLLayerDMM(input(">>> ")))
+        print(FirstLLayerDMM(input(">>> ")))

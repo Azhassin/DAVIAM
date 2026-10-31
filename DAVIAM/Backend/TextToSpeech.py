@@ -1,52 +1,107 @@
-import pygame
-import random
 import asyncio
-import edge_tts
 import os
-from dotenv import dotenv_values
+import random
+import sys
 
-env_vars=dotenv_values(".env")
-AssistantVoice=env_vars.get("AssistantVoice")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+import edge_tts
+
+from paths import data_path, env_get
+
+try:
+    import pygame
+except Exception as error:
+    pygame = None
+    print(f"pygame is unavailable, so speech will be saved but not played: {error}")
+
+DEFAULT_VOICE = "en-US-JennyNeural"
+
+
+def speech_path():
+    return data_path("speech.mp3")
+
+
+def assistant_voice():
+    return env_get("AssistantVoice", DEFAULT_VOICE)
+
 
 async def TextToAudioFile(text) -> None:
-    file_path=r"Data\\speech.mp3"
-
+    file_path = speech_path()
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
     if os.path.exists(file_path):
         os.remove(file_path)
 
-    communicate=edge_tts.Communicate(text,AssistantVoice,pitch='+5Hz',rate='+13%')
-    await communicate.save(r'Data\\speech.mp3')
+    communicate = edge_tts.Communicate(text, assistant_voice(), pitch="+5Hz", rate="+13%")
+    await communicate.save(file_path)
 
-def TTS(Text,func=lambda r=None: True):
-    while True:
+
+def _prefer_dummy_audio():
+    """Avoid opening a missing sound card. SDL then plays to a silent driver."""
+    if os.environ.get("SDL_AUDIODRIVER"):
+        return False
+    if os.environ.get("DAVIAM_HEADLESS") == "1":
+        return True
+    return sys.platform.startswith("linux") and not os.path.isdir("/dev/snd")
+
+
+def _play_audio(file_path, func):
+    if pygame is None:
+        print(f"Saved speech to {file_path}. Playback was skipped because pygame is unavailable.")
+        return True
+
+    if _prefer_dummy_audio():
+        os.environ["SDL_AUDIODRIVER"] = "dummy"
+        print("No speakers detected. The reply was saved and will not be played aloud.")
+
+    try:
+        pygame.mixer.init()
+    except Exception as error:
+        os.environ["SDL_AUDIODRIVER"] = "dummy"
         try:
-            asyncio.run(TextToAudioFile(Text))
             pygame.mixer.init()
-            pygame.mixer.music.load(r"Data\\speech.mp3")
-            pygame.mixer.music.play()
-
-            while pygame.mixer.music.get_busy():
-                if func()==False:
-                    break
-                pygame.time.Clock().tick(10)
-
+        except Exception:
+            print(f"Audio playback is unavailable ({error}). Speech was saved to {file_path}.")
             return True
-        
-        except Exception as e:
-            print(f"Error in TTS: {e}")
+        print(f"Audio playback is unavailable ({error}). Speech was saved to {file_path}.")
 
-        finally:
-            try:
-                func(False)
+    pygame.mixer.music.load(file_path)
+    pygame.mixer.music.play()
+    while pygame.mixer.music.get_busy():
+        if func() is False:
+            break
+        pygame.time.Clock().tick(10)
+    return True
+
+
+def TTS(Text, func=lambda r=None: True):
+    try:
+        asyncio.run(TextToAudioFile(Text))
+    except Exception as error:
+        print(f"Error in TTS: {error}")
+        return False
+
+    file_path = speech_path()
+    try:
+        return _play_audio(file_path, func)
+    except Exception as error:
+        print(f"Audio playback is unavailable ({error}). Speech was saved to {file_path}.")
+        return True
+    finally:
+        try:
+            func(False)
+            if pygame is not None and pygame.mixer.get_init():
                 pygame.mixer.music.stop()
                 pygame.mixer.quit()
+        except Exception as error:
+            print(f"Error in finally block: {error}")
 
-            except Exception as e:
-                print(f"Error in finally block: {e}")
 
-def TextToSpeech(Text,func=lambda r=None: True):
-    Data=str(Text).split(".")
-    
+def TextToSpeech(Text, func=lambda r=None: True):
+    Data = str(Text).split(".")
+
     responses = [
         "The rest of the result has been printed to the chat screen, kindly check it out sir.",
         "The rest of the text is now on the chat screen, sir, please check it.",
@@ -67,15 +122,16 @@ def TextToSpeech(Text,func=lambda r=None: True):
         "Sir, the chat screen holds the continuation of the text.",
         "You'll find the complete answer on the chat screen, kindly check it out sir.",
         "Please review the chat screen for the rest of the text, sir.",
-        "Sir, look at the chat screen for the complete answer."
+        "Sir, look at the chat screen for the complete answer.",
     ]
 
-    if len(Data)>4 and len(Text)>=250:
-        TTS(" ".join(Text.split(".")[0:2])+". "+random.choice(responses),func)
+    if len(Data) > 4 and len(Text) >= 250:
+        spoken = " ".join(Text.split(".")[0:2]) + ". " + random.choice(responses)
+        return TTS(spoken, func)
 
-    else:
-        TTS(Text,func)
+    return TTS(Text, func)
 
-if __name__=="__main__":
+
+if __name__ == "__main__":
     while True:
         TextToSpeech(input("Enter the text: "))
